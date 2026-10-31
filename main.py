@@ -1,50 +1,38 @@
-import sqlite3
 import time
 import os
 import threading
 import random
 from datetime import datetime, timedelta
 from flask import Flask
+from pymongo import MongoClient
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 # ================= CONFIGURATION =================
 TOKEN = os.environ.get("TELEGRAM_TOKEN") 
+MONGODB_URI = os.environ.get("MONGODB_URI") 
 ADMIN_ID = 6179056395 
 SUPPORT_USERNAME = "@nxprimemods1" # এখানে আপনার টেলিগ্রাম ইউজারনেম দিন
-# =================================================
 
-if os.path.exists('earn_bot.db'):
-    os.remove('earn_bot.db')
+# MongoDB Connection
+client = MongoClient(MONGODB_URI)
+db = client['nx_earning_bot'] # ডাটাবেসের নাম
+users_collection = db['users']
+tasks_collection = db['tasks']
+user_tasks_collection = db['user_tasks']
+withdraw_collection = db['withdrawals']
 
-conn = sqlite3.connect('earn_bot.db', check_same_thread=False)
-cursor = conn.cursor()
-
-cursor.execute('''CREATE TABLE IF NOT EXISTS users 
-                  (user_id INTEGER PRIMARY KEY, points INTEGER DEFAULT 0, 
-                   wallet TEXT DEFAULT NULL, referred_by INTEGER DEFAULT NULL, 
-                   last_checkin TEXT DEFAULT NULL, last_spin TEXT DEFAULT NULL,
-                   total_referrals INTEGER DEFAULT 0, first_name TEXT)''')
-cursor.execute('''CREATE TABLE IF NOT EXISTS tasks 
-                  (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, link TEXT, reward INTEGER, timer INTEGER)''')
-cursor.execute('''CREATE TABLE IF NOT EXISTS user_tasks 
-                  (user_id INTEGER, task_id INTEGER, completed_at TEXT, UNIQUE(user_id, task_id))''')
-cursor.execute('''CREATE TABLE IF NOT EXISTS task_history 
-                  (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, task_name TEXT, reward INTEGER, date TEXT)''')
-cursor.execute('''CREATE TABLE IF NOT EXISTS withdraw_history 
-                  (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, amount INTEGER, wallet TEXT, status TEXT, date TEXT)''')
-conn.commit()
-
+# ================= HELPER FUNCTIONS =================
 def get_user(user_id):
-    cursor.execute("SELECT points, wallet, referred_by, last_checkin, last_spin, total_referrals FROM users WHERE user_id = ?", (user_id,))
-    return cursor.fetchone()
+    return users_collection.find_one({"user_id": user_id})
 
 def add_points(user_id, amount):
-    cursor.execute("INSERT OR IGNORE INTO users (user_id, points) VALUES (?, 0)", (user_id,))
-    cursor.execute("UPDATE users SET points = points + ? WHERE user_id = ?", (amount, user_id))
-    conn.commit()
+    users_collection.update_one(
+        {"user_id": user_id}, 
+        {"$inc": {"points": amount}}, 
+        upsert=True
+    )
 
-# মেইন মেনুর ডিজাইন (নিচে নোটিশ বোর্ড যুক্ত)
 def get_main_menu():
     keyboard = [
         [InlineKeyboardButton("📋 Tasks", callback_data="show_tasks"), InlineKeyboardButton("🎰 Lucky Spin", callback_data="spin")],
@@ -68,8 +56,7 @@ def get_main_menu_text(first_name="User"):
         "✅ Minimum Withdrawal: 1000 Pts = 1 USDT\n\n"
         "👇 **Choose an option below to start:**\n"
         "➖➖➖➖➖➖➖➖➖➖\n"
-        "📢 **Notice:** Please complete tasks honestly. Fake accounts will be banned!\n"
-        "❓ Need help? Contact Support."
+        "📢 **Notice:** Please complete tasks honestly. Fake accounts will be banned!"
     )
     return text
 
@@ -92,20 +79,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     first_name = update.effective_user.first_name
     
-    cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
-    cursor.execute("UPDATE users SET first_name = ? WHERE user_id = ?", (first_name, user_id))
-    conn.commit()
+    users_collection.update_one(
+        {"user_id": user_id}, 
+        {"$setOnInsert": {"points": 0, "wallet": None, "referred_by": None, "last_checkin": None, "last_spin": None, "total_referrals": 0, "first_name": first_name}}, 
+        upsert=True
+    )
     
     if context.args:
         try:
             referrer_id = int(context.args[0])
             if referrer_id != user_id:
-                cursor.execute("SELECT referred_by FROM users WHERE user_id = ?", (user_id,))
-                result = cursor.fetchone()
-                if result and result[0] is None:
-                    cursor.execute("UPDATE users SET referred_by = ? WHERE user_id = ?", (referrer_id, user_id))
-                    cursor.execute("UPDATE users SET total_referrals = total_referrals + 1 WHERE user_id = ?", (referrer_id,))
-                    conn.commit()
+                user_data = get_user(user_id)
+                if user_data and user_data.get("referred_by") is None:
+                    users_collection.update_one({"user_id": user_id}, {"$set": {"referred_by": referrer_id}})
+                    users_collection.update_one({"user_id": referrer_id}, {"$inc": {"total_referrals": 1}})
                     add_points(referrer_id, 100) 
                     try:
                         await context.bot.send_message(chat_id=referrer_id, text=f"🎉 **New Referral!**\n{first_name} joined using your link. You earned 100 Points.", parse_mode='Markdown')
@@ -113,10 +100,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             pass
 
-    # নোটিশ বোর্ডসহ মেইন মেনু পাঠানো
     await update.message.reply_text(get_main_menu_text(first_name), reply_markup=get_main_menu(), parse_mode='Markdown')
-
-# ================= ADMIN COMMANDS =================
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -125,7 +109,6 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text("⚙️ **Welcome to Admin Panel**\nSelect an option:", reply_markup=get_admin_menu(), parse_mode='Markdown')
 
-# ================= BUTTON HANDLER =================
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     try:
@@ -138,11 +121,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data = get_user(user_id)
     
     if not user_data:
-        cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
-        conn.commit()
+        users_collection.insert_one({"user_id": user_id, "points": 0, "first_name": query.from_user.first_name})
         user_data = get_user(user_id)
 
-    # মেইন মেনুতে ফেরার সময়ও নোটিশ বোর্ড দেখাবে
     if data == "back_to_main":
         first_name = query.from_user.first_name
         await query.message.reply_text(get_main_menu_text(first_name), reply_markup=get_main_menu(), parse_mode='Markdown')
@@ -155,26 +136,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "admin_del_task":
         if user_id != ADMIN_ID: return
-        cursor.execute("SELECT id, title FROM tasks")
-        tasks = cursor.fetchall()
+        tasks = list(tasks_collection.find())
         if not tasks:
             await query.message.reply_text("No tasks available to delete.")
             return
         task_list = "🗑 **Active Tasks:**\n\n"
         for t in tasks:
-            task_list += f"ID: `{t[0]}` | {t[1]}\n"
+            task_list += f"ID: `{t['_id']}` | {t['title']}\n"
         task_list += "\nSend the **Task ID** to delete."
         await query.message.reply_text(task_list, parse_mode='Markdown')
         context.user_data['admin_action'] = 'delete_task'
 
     elif data == "admin_users":
         if user_id != ADMIN_ID: return
-        cursor.execute("SELECT user_id, first_name, points, total_referrals FROM users ORDER BY points DESC LIMIT 20")
-        users = cursor.fetchall()
+        users = list(users_collection.find().sort("points", -1).limit(20))
         text = f"👥 **Top 20 Users**\n\n"
         for u in users:
-            name = u[1] if u[1] else "Anonymous"
-            text += f"👤 {name} | `{u[0]}`\n💰 Bal: {u[2]} | 🤝 Ref: {u[3]}\n\n"
+            name = u.get("first_name", "Anonymous")
+            text += f"👤 {name} | `{u['user_id']}`\n💰 Bal: {u.get('points', 0)} | 🤝 Ref: {u.get('total_referrals', 0)}\n\n"
         await query.message.reply_text(text, reply_markup=get_admin_menu(), parse_mode='Markdown')
 
     elif data == "admin_edit_balance":
@@ -189,8 +168,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     # ---------------- USER BUTTONS ----------------
     elif data == "balance":
-        points = user_data[0]
-        wallet = user_data[1]
+        points = user_data.get("points", 0)
+        wallet = user_data.get("wallet")
         
         progress = min(int((points / 1000) * 10), 10)
         bar = "█" * progress + "░" * (10 - progress)
@@ -216,11 +195,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
     elif data == "connect_wallet":
-        await query.message.reply_text("Send your USDT BEP20 address (Must start with 0x and be 42 characters):\n\n➖➖➖➖➖➖➖➖➖➖\n📢 **Note:** Please double-check your address. Wrong address will result in lost funds.")
+        await query.message.reply_text("Send your USDT BEP20 address (Must start with 0x and be 42 characters):\n\n➖➖➖➖➖➖➖➖➖➖\n📢 **Note:** Please double-check your address.")
         context.user_data['awaiting_wallet'] = True
 
     elif data == "checkin":
-        last_checkin = user_data[3]
+        last_checkin = user_data.get("last_checkin")
         now = datetime.now()
         if last_checkin:
             last_time = datetime.strptime(last_checkin, '%Y-%m-%d %H:%M:%S')
@@ -228,13 +207,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.answer("❌ Already checked in! Come back later.", show_alert=True)
                 return
         add_points(user_id, 50)
-        cursor.execute("UPDATE users SET last_checkin = ? WHERE user_id = ?", (now.strftime('%Y-%m-%d %H:%M:%S'), user_id))
-        conn.commit()
+        users_collection.update_one({"user_id": user_id}, {"$set": {"last_checkin": now.strftime('%Y-%m-%d %H:%M:%S')}})
         await query.answer("✅ Check-in successful! You earned 50 Points.", show_alert=True)
         await query.message.reply_text("✅ Check-in successful! You earned 50 Points.\n\n➖➖➖➖➖➖➖➖➖➖\nCome back tomorrow for another 50 points!", reply_markup=get_back_button(), parse_mode='Markdown')
 
     elif data == "spin":
-        last_spin = user_data[4]
+        last_spin = user_data.get("last_spin")
         now = datetime.now()
         if last_spin:
             last_time = datetime.strptime(last_spin, '%Y-%m-%d %H:%M:%S')
@@ -245,32 +223,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         won_points = random.choices([1000, 500, 100, 50, 20], weights=[1, 2, 7, 20, 70], k=1)[0]
         
         add_points(user_id, won_points)
-        cursor.execute("UPDATE users SET last_spin = ? WHERE user_id = ?", (now.strftime('%Y-%m-%d %H:%M:%S'), user_id))
-        conn.commit()
+        users_collection.update_one({"user_id": user_id}, {"$set": {"last_spin": now.strftime('%Y-%m-%d %H:%M:%S')}})
         await query.answer(f"🎉 You won {won_points} Points!", show_alert=True)
         await query.message.reply_text(f"🎰 **Spin Result:** You won **{won_points} Points**!\n\n➖➖➖➖➖➖➖➖➖➖\nCome back tomorrow for another spin.", reply_markup=get_back_button(), parse_mode='Markdown')
 
     elif data == "task_history":
-        cursor.execute("SELECT task_name, reward, date FROM task_history WHERE user_id = ? ORDER BY id DESC LIMIT 5", (user_id,))
-        history = cursor.fetchall()
+        history = list(user_tasks_collection.find({"user_id": user_id}).sort("date", -1).limit(5))
         if not history:
             await query.message.reply_text("You haven't completed any tasks yet.", reply_markup=get_back_button())
             return
         text = "📜 **Your Last 5 Tasks:**\n\n"
         for h in history:
-            text += f"✅ {h[0]} | +{h[1]} Pts | {h[2]}\n"
+            text += f"✅ {h.get('task_name', 'Task')} | +{h.get('reward', 0)} Pts | {h.get('date')}\n"
         await query.message.reply_text(text, reply_markup=get_back_button(), parse_mode='Markdown')
 
     elif data == "wd_history":
-        cursor.execute("SELECT amount, wallet, status, date FROM withdraw_history WHERE user_id = ? ORDER BY id DESC LIMIT 5", (user_id,))
-        history = cursor.fetchall()
+        history = list(withdraw_collection.find({"user_id": user_id}).sort("date", -1).limit(5))
         if not history:
             await query.message.reply_text("You have no withdrawal history.", reply_markup=get_back_button())
             return
         text = "📊 **Your Last 5 Withdrawals:**\n\n"
         for h in history:
-            status_icon = "✅" if h[2] == "Approved" else "❌" if h[2] == "Rejected" else "⏳"
-            text += f"{status_icon} {h[0]} Pts | {h[2]} | {h[3]}\n"
+            status_icon = "✅" if h.get('status') == "Approved" else "❌" if h.get('status') == "Rejected" else "⏳"
+            text += f"{status_icon} {h.get('amount')} Pts | {h.get('status')} | {h.get('date')}\n"
         await query.message.reply_text(text, reply_markup=get_back_button(), parse_mode='Markdown')
 
     elif data == "refer":
@@ -280,19 +255,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(text, reply_markup=get_back_button(), parse_mode='Markdown')
 
     elif data == "leaderboard":
-        cursor.execute("SELECT first_name, points FROM users ORDER BY points DESC LIMIT 10")
-        top_users = cursor.fetchall()
+        users = list(users_collection.find().sort("points", -1).limit(10))
         text = "🏆 **Top 10 Earners** 🏆\n\n"
-        for i, u in enumerate(top_users, start=1):
-            text += f"{i}. {u[0]} - {u[1]} Points\n"
+        for i, u in enumerate(users, start=1):
+            text += f"{i}. {u.get('first_name', 'Anonymous')} - {u.get('points', 0)} Points\n"
         text += "\n➖➖➖➖➖➖➖➖➖➖\nKeep earning to secure your spot in the Top 10!"
         await query.message.reply_text(text, reply_markup=get_back_button(), parse_mode='Markdown')
 
     elif data == "show_tasks":
-        cursor.execute("SELECT task_id FROM user_tasks WHERE user_id = ?", (user_id,))
-        completed_tasks = [row[0] for row in cursor.fetchall()]
-        cursor.execute("SELECT id, title, reward, timer FROM tasks")
-        tasks = cursor.fetchall()
+        completed_tasks = [t['task_id'] for t in user_tasks_collection.find({"user_id": user_id})]
+        tasks = list(tasks_collection.find())
         
         if not tasks:
             await query.message.reply_text("No tasks available right now. Please check back later.", reply_markup=get_back_button())
@@ -300,10 +272,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         keyboard = []
         for task in tasks:
-            if task[0] in completed_tasks:
-                keyboard.append([InlineKeyboardButton(f"✅ {task[1]} (Completed)", callback_data="already_done")])
+            task_id = str(task['_id'])
+            if task_id in completed_tasks:
+                keyboard.append([InlineKeyboardButton(f"✅ {task['title']} (Completed)", callback_data="already_done")])
             else:
-                keyboard.append([InlineKeyboardButton(f"{task[1]} (+{task[2]} pts)", callback_data=f"do_task_{task[0]}")])
+                keyboard.append([InlineKeyboardButton(f"{task['title']} (+{task['reward']} pts)", callback_data=f"do_task_{task_id}")])
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="back_to_main")])
         await query.message.reply_text("📋 **Available Tasks:**\n\nSelect a task to complete. Make sure to follow the timer rules.", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
@@ -312,22 +285,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("do_task_"):
         task_id = data.split("_")[2]
-        cursor.execute("SELECT title, link, reward, timer FROM tasks WHERE id = ?", (task_id,))
-        task = cursor.fetchone()
+        task = tasks_collection.find_one({"_id": task_id})
         context.user_data[f'task_start_{task_id}'] = time.time()
         keyboard = [
-            [InlineKeyboardButton("🔗 Open Link", url=task[1])],
-            [InlineKeyboardButton("✅ Verify", callback_data=f"verify_{task_id}_{task[2]}_{task[3]}")],
+            [InlineKeyboardButton("🔗 Open Link", url=task['link'])],
+            [InlineKeyboardButton("✅ Verify", callback_data=f"verify_{task_id}_{task['reward']}_{task['timer']}")],
             [InlineKeyboardButton("🔙 Back", callback_data="back_to_main")]
         ]
-        await query.message.reply_text(f"1. Open Link\n2. Wait {task[3]} seconds\n3. Click Verify\n\n➖➖➖➖➖➖➖➖➖➖\n📢 **Note:** Clicking Verify too early will fail.", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.message.reply_text(f"1. Open Link\n2. Wait {task['timer']} seconds\n3. Click Verify\n\n➖➖➖➖➖➖➖➖➖➖\n📢 **Note:** Clicking Verify too early will fail.", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data.startswith("verify_"):
         parts = data.split("_")
         task_id, reward, req_time = parts[1], int(parts[2]), int(parts[3])
         
-        cursor.execute("SELECT * FROM user_tasks WHERE user_id = ? AND task_id = ?", (user_id, task_id))
-        if cursor.fetchone():
+        if user_tasks_collection.find_one({"user_id": user_id, "task_id": task_id}):
             await query.answer("❌ Already completed!", show_alert=True)
             return
         
@@ -340,26 +311,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("❌ Too fast! Wait a bit.", show_alert=True)
         else:
             add_points(user_id, reward)
+            task = tasks_collection.find_one({"_id": task_id})
             now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            cursor.execute("INSERT INTO user_tasks (user_id, task_id, completed_at) VALUES (?, ?, ?)", (user_id, task_id, now_str))
-            cursor.execute("SELECT title FROM tasks WHERE id = ?", (task_id,))
-            task_title = cursor.fetchone()[0]
-            cursor.execute("INSERT INTO task_history (user_id, task_name, reward, date) VALUES (?, ?, ?, ?)", (user_id, task_title, reward, now_str))
-            conn.commit()
+            
+            user_tasks_collection.insert_one({"user_id": user_id, "task_id": task_id, "task_name": task['title'], "reward": reward, "date": now_str})
+            users_collection.update_one({"user_id": user_id}, {"$inc": {"completed_tasks": 1}})
             
             del context.user_data[f'task_start_{task_id}']
             await query.answer(f"✅ Done! You earned {reward} Points.", show_alert=True)
             await query.message.reply_text(f"✅ Task completed! You earned {reward} Points.\n\n➖➖➖➖➖➖➖➖➖➖\nCheck your balance to see progress.", reply_markup=get_back_button())
 
-            # অ্যাডমিনকে লাইভ নোটিফিকেশন
-            try:
-                cursor.execute("SELECT first_name FROM users WHERE user_id = ?", (user_id,))
-                user_name = cursor.fetchone()[0]
-                await context.bot.send_message(chat_id=ADMIN_ID, text=f"📢 **Live Update:**\nUser {user_name} just completed a task and earned {reward} Points!")
-            except: pass
-
     elif data == "withdraw":
-        points, wallet = user_data[0], user_data[1]
+        points = user_data.get("points", 0)
+        wallet = user_data.get("wallet")
+        
         if not wallet:
             await query.message.reply_text("⚠️ Connect wallet first from Balance menu.\n\n➖➖➖➖➖➖➖➖➖➖\n📢 **Note:** Your BEP20 wallet is required to receive USDT.", reply_markup=get_back_button())
             return
@@ -368,8 +333,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        cursor.execute("INSERT INTO withdraw_history (user_id, amount, wallet, status, date) VALUES (?, 1000, ?, 'Pending', ?)", (user_id, wallet, now_str))
-        conn.commit()
+        withdraw_collection.insert_one({"user_id": user_id, "amount": 1000, "wallet": wallet, "status": "Pending", "date": now_str})
         
         await query.message.reply_text("✅ Withdrawal request sent! Please wait for approval.\n\n➖➖➖➖➖➖➖➖➖➖\n📢 **Note:** Payments are processed within 24 hours.", reply_markup=get_back_button(), parse_mode='Markdown')
         
@@ -379,19 +343,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("wd_approve_"):
         if user_id != ADMIN_ID: return
         target_user_id = int(data.split("_")[2])
-        cursor.execute("UPDATE users SET points = points - 1000 WHERE user_id = ?", (target_user_id,))
-        cursor.execute("UPDATE withdraw_history SET status = 'Approved' WHERE user_id = ? AND status = 'Pending'", (target_user_id,))
-        conn.commit()
+        users_collection.update_one({"user_id": target_user_id}, {"$inc": {"points": -1000}})
+        withdraw_collection.update_many({"user_id": target_user_id, "status": "Pending"}, {"$set": {"status": "Approved"}})
         await query.edit_message_text(f"✅ Approved for `{target_user_id}`.")
-        await context.bot.send_message(chat_id=target_user_id, text="✅ Your withdrawal has been approved!\n\n➖➖➖➖➖➖➖➖➖➖\nThank you for using our platform.")
+        await context.bot.send_message(chat_id=target_user_id, text="✅ Your withdrawal has been approved!")
 
     elif data.startswith("wd_reject_"):
         if user_id != ADMIN_ID: return
         target_user_id = int(data.split("_")[2])
-        cursor.execute("UPDATE withdraw_history SET status = 'Rejected' WHERE user_id = ? AND status = 'Pending'", (target_user_id,))
-        conn.commit()
+        withdraw_collection.update_many({"user_id": target_user_id, "status": "Pending"}, {"$set": {"status": "Rejected"}})
         await query.edit_message_text(f"❌ Rejected for `{target_user_id}`.")
-        await context.bot.send_message(chat_id=target_user_id, text="❌ Your withdrawal request was rejected.\n\n➖➖➖➖➖➖➖➖➖➖\nPlease contact support for more info.")
+        await context.bot.send_message(chat_id=target_user_id, text="❌ Your withdrawal request was rejected.")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -399,8 +361,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if context.user_data.get('awaiting_wallet'):
         if text.startswith("0x") and len(text) == 42:
-            cursor.execute("UPDATE users SET wallet = ? WHERE user_id = ?", (text, user_id))
-            conn.commit()
+            users_collection.update_one({"user_id": user_id}, {"$set": {"wallet": text}})
             await update.message.reply_text(f"✅ Wallet Connected:\n`{text}`\n\n➖➖➖➖➖➖➖➖➖➖\nYou can now withdraw once you reach 1000 points.", reply_markup=get_back_button(), parse_mode='Markdown')
             context.user_data['awaiting_wallet'] = False
         else:
@@ -415,8 +376,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parts = text.split("|")
                 title, link = parts[0].strip(), parts[1].strip()
                 reward, timer = int(parts[2].strip()), int(parts[3].strip())
-                cursor.execute("INSERT INTO tasks (title, link, reward, timer) VALUES (?, ?, ?, ?)", (title, link, reward, timer))
-                conn.commit()
+                tasks_collection.insert_one({"title": title, "link": link, "reward": reward, "timer": timer})
                 await update.message.reply_text(f"✅ Task Added: {title}")
             except Exception:
                 await update.message.reply_text("❌ Format Error! Use: `Name | Link | Reward | Timer`", parse_mode='Markdown')
@@ -424,32 +384,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif action == 'delete_task':
             try:
-                task_id = int(text.strip())
-                cursor.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-                conn.commit()
-                await update.message.reply_text(f"✅ Task ID `{task_id}` deleted." if cursor.rowcount > 0 else "❌ Task ID not found.")
+                task_id = text.strip()
+                result = tasks_collection.delete_one({"_id": task_id})
+                await update.message.reply_text(f"✅ Task deleted." if result.deleted_count > 0 else "❌ Task ID not found.")
             except Exception:
-                await update.message.reply_text("❌ Send only the Task ID number.")
+                await update.message.reply_text("❌ Invalid ID!")
             context.user_data['admin_action'] = None
 
         elif action == 'edit_balance':
             try:
                 parts = text.split("|")
                 target_id, value = int(parts[0].strip()), int(parts[1].strip())
-                cursor.execute("UPDATE users SET points = ? WHERE user_id = ?", (value, target_id))
-                conn.commit()
+                users_collection.update_one({"user_id": target_id}, {"$set": {"points": value}})
                 await update.message.reply_text(f"✅ User `{target_id}` balance set to {value}.")
             except Exception:
                 await update.message.reply_text("❌ Format Error! Use: `UserID | Amount`", parse_mode='Markdown')
             context.user_data['admin_action'] = None
 
         elif action == 'broadcast':
-            cursor.execute("SELECT user_id FROM users")
-            users = cursor.fetchall()
+            users = list(users_collection.find({}, {"user_id": 1}))
             success = 0
             for u in users:
                 try:
-                    await context.bot.send_message(chat_id=u[0], text=f"📢 **Announcement:**\n\n{text}", parse_mode='Markdown')
+                    await context.bot.send_message(chat_id=u['user_id'], text=f"📢 **Announcement:**\n\n{text}", parse_mode='Markdown')
                     success += 1
                 except: pass
             await update.message.reply_text(f"✅ Broadcast sent to {success} users.")
@@ -468,8 +425,8 @@ def run_flask():
 
 # ================= MAIN RUNNER =================
 def main():
-    if not TOKEN:
-        print("Error: TELEGRAM_TOKEN environment variable is missing!")
+    if not TOKEN or not MONGODB_URI:
+        print("Error: TELEGRAM_TOKEN or MONGODB_URI environment variable is missing!")
         return
         
     app = Application.builder().token(TOKEN).build()
