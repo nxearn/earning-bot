@@ -8,11 +8,12 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 # ================= CONFIGURATION =================
-TOKEN = "9049025070:AAFfb9Gyujal8jh1U9WRd7ONtNEt3vQUXRQ"
+# টোকেন এখন Render-এর Environment Variable থেকে নেওয়া হবে
+TOKEN = os.environ.get("TELEGRAM_TOKEN") 
 ADMIN_ID = 6179056395 
 # =================================================
 
-# ডাটাবেস অটো-ক্লিনার (প্রতিবার রিস্টার্টে ডাটা মুছে নতুন করে তৈরি হবে, Render-এ ডাটা সেভ রাখতে চাইলে এই ২ লাইন মুছে দেবেন)
+# ডাটাবেস অটো-ক্লিনার (প্রতিবার রিস্টার্টে ডাটা মুছে নতুন করে তৈরি হবে)
 if os.path.exists('earn_bot.db'):
     os.remove('earn_bot.db')
 
@@ -367,6 +368,10 @@ def run_flask():
 
 # ================= MAIN RUNNER =================
 def main():
+    if not TOKEN:
+        print("Error: TELEGRAM_TOKEN environment variable is missing!")
+        return
+        
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
