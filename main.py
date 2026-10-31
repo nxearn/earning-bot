@@ -11,7 +11,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 # ================= CONFIGURATION =================
 TOKEN = os.environ.get("TELEGRAM_TOKEN") 
 ADMIN_ID = 6179056395 
-SUPPORT_USERNAME = "@YourSupportUsername" # এখানে আপনার টেলিগ্রাম ইউজারনেম দিন
+SUPPORT_USERNAME = "@nxprimemods1" # এখানে আপনার টেলিগ্রাম ইউজারনেম দিন
 # =================================================
 
 if os.path.exists('earn_bot.db'):
