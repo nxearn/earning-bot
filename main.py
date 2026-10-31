@@ -5,6 +5,7 @@ import random
 from datetime import datetime, timedelta
 from flask import Flask
 from pymongo import MongoClient
+from bson.objectid import ObjectId
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
@@ -12,15 +13,16 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 TOKEN = os.environ.get("TELEGRAM_TOKEN") 
 MONGODB_URI = os.environ.get("MONGODB_URI") 
 ADMIN_ID = 6179056395 
-SUPPORT_USERNAME = "@nxprimemods1" # এখানে আপনার টেলিগ্রাম ইউজারনেম দিন
+SUPPORT_USERNAME = "@YourSupportUsername" # এখানে আপনার টেলিগ্রাম ইউজারনেম দিন
 
 # MongoDB Connection
 client = MongoClient(MONGODB_URI)
-db = client['nx_earning_bot'] # ডাটাবেসের নাম
+db = client['nx_earning_bot'] 
 users_collection = db['users']
 tasks_collection = db['tasks']
 user_tasks_collection = db['user_tasks']
 withdraw_collection = db['withdrawals']
+gift_codes_collection = db['gift_codes'] # নতুন কালেকশন গিফট কোডের জন্য
 
 # ================= HELPER FUNCTIONS =================
 def get_user(user_id):
@@ -38,6 +40,7 @@ def get_main_menu():
         [InlineKeyboardButton("📋 Tasks", callback_data="show_tasks"), InlineKeyboardButton("🎰 Lucky Spin", callback_data="spin")],
         [InlineKeyboardButton("💰 Balance", callback_data="balance"), InlineKeyboardButton("🎁 Daily Check-in", callback_data="checkin")],
         [InlineKeyboardButton("🔗 Refer & Earn", callback_data="refer"), InlineKeyboardButton("💸 Withdraw", callback_data="withdraw")],
+        [InlineKeyboardButton("🎟️ Redeem Code", callback_data="redeem_code")], # নতুন বাটন
         [InlineKeyboardButton("📜 Task History", callback_data="task_history"), InlineKeyboardButton("📊 Withdraw History", callback_data="wd_history")],
         [InlineKeyboardButton("🆘 Support", url="https://t.me/" + SUPPORT_USERNAME.replace("@", "")), InlineKeyboardButton("🏆 Leaderboard", callback_data="leaderboard")]
     ]
@@ -53,7 +56,7 @@ def get_main_menu_text(first_name="User"):
         "🚀 **Earn free USDT by completing simple tasks.**\n\n"
         "✅ Complete Tasks & Earn Points\n"
         "✅ Invite Friends for Bonus\n"
-        "✅ Minimum Withdrawal: 1000 Pts = 1 USDT\n\n"
+        "✅ Minimum Withdrawal: 5000 Pts = 5 USDT\n\n" # লিমিট আপডেট
         "👇 **Choose an option below to start:**\n"
         "➖➖➖➖➖➖➖➖➖➖\n"
         "📢 **Notice:** Please complete tasks honestly. Fake accounts will be banned!"
@@ -66,6 +69,7 @@ def get_back_button():
 def get_admin_menu():
     keyboard = [
         [InlineKeyboardButton("➕ Add Task", callback_data="admin_add_task"), InlineKeyboardButton("🗑 Delete Task", callback_data="admin_del_task")],
+        [InlineKeyboardButton("🎁 Create Gift Code", callback_data="admin_create_code")], # নতুন বাটন
         [InlineKeyboardButton("👥 User List", callback_data="admin_users"), InlineKeyboardButton("🔄 Refresh Users", callback_data="admin_users")],
         [InlineKeyboardButton("💰 Edit Balance", callback_data="admin_edit_balance")],
         [InlineKeyboardButton("📢 Broadcast Message", callback_data="admin_broadcast")],
@@ -147,6 +151,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(task_list, parse_mode='Markdown')
         context.user_data['admin_action'] = 'delete_task'
 
+    elif data == "admin_create_code":
+        if user_id != ADMIN_ID: return
+        await query.message.reply_text("🎁 Send Gift Code in this format:\n`CodeName | Points`\n\nExample: `NXGIFT100 | 500`", parse_mode='Markdown')
+        context.user_data['admin_action'] = 'create_code'
+
     elif data == "admin_users":
         if user_id != ADMIN_ID: return
         users = list(users_collection.find().sort("points", -1).limit(20))
@@ -167,26 +176,31 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['admin_action'] = 'broadcast'
         
     # ---------------- USER BUTTONS ----------------
+    elif data == "redeem_code":
+        await query.message.reply_text("🎟️ **Please send your Gift Code:**")
+        context.user_data['awaiting_gift_code'] = True
+
     elif data == "balance":
         points = user_data.get("points", 0)
         wallet = user_data.get("wallet")
         
-        progress = min(int((points / 1000) * 10), 10)
+        # উইথড্র লিমিট ৫০০০ এ আপডেট করা হয়েছে
+        progress = min(int((points / 5000) * 10), 10)
         bar = "█" * progress + "░" * (10 - progress)
         
         if wallet:
             text = (
                 f"💰 **Your Balance:** {points} Points\n"
-                f"📈 **Withdraw Progress:**\n`[{bar}]` {points}/1000\n\n"
+                f"📈 **Withdraw Progress:**\n`[{bar}]` {points}/5000\n\n"
                 f"🔗 **Wallet:**\n`{wallet}`\n\n"
                 "➖➖➖➖➖➖➖➖➖➖\n"
-                "📢 **Note:** Minimum 1000 Points required for withdrawal."
+                "📢 **Note:** Minimum 5000 Points required for withdrawal."
             )
             keyboard = [[InlineKeyboardButton("🔄 Change Wallet", callback_data="connect_wallet")], [InlineKeyboardButton("🔙 Back", callback_data="back_to_main")]]
         else:
             text = (
                 f"💰 **Your Balance:** {points} Points\n"
-                f"📈 **Withdraw Progress:**\n`[{bar}]` {points}/1000\n\n"
+                f"📈 **Withdraw Progress:**\n`[{bar}]` {points}/5000\n\n"
                 f"⚠️ **Wallet Not Connected**\n\n"
                 "➖➖➖➖➖➖➖➖➖➖\n"
                 "📢 **Note:** Connect your BEP20 wallet to receive payments."
@@ -285,7 +299,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("do_task_"):
         task_id = data.split("_")[2]
-        task = tasks_collection.find_one({"_id": task_id})
+        task = tasks_collection.find_one({"_id": ObjectId(task_id)})
         context.user_data[f'task_start_{task_id}'] = time.time()
         keyboard = [
             [InlineKeyboardButton("🔗 Open Link", url=task['link'])],
@@ -311,7 +325,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("❌ Too fast! Wait a bit.", show_alert=True)
         else:
             add_points(user_id, reward)
-            task = tasks_collection.find_one({"_id": task_id})
+            task = tasks_collection.find_one({"_id": ObjectId(task_id)})
             now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
             user_tasks_collection.insert_one({"user_id": user_id, "task_id": task_id, "task_name": task['title'], "reward": reward, "date": now_str})
@@ -328,22 +342,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not wallet:
             await query.message.reply_text("⚠️ Connect wallet first from Balance menu.\n\n➖➖➖➖➖➖➖➖➖➖\n📢 **Note:** Your BEP20 wallet is required to receive USDT.", reply_markup=get_back_button())
             return
-        if points < 1000:
-            await query.message.reply_text(f"❌ Minimum 1000 Points needed. Your Balance: {points}\n\n➖➖➖➖➖➖➖➖➖➖\nComplete more tasks to reach the minimum.", reply_markup=get_back_button())
+        if points < 5000: # লিমিট আপডেট
+            await query.message.reply_text(f"❌ Minimum 5000 Points needed. Your Balance: {points}\n\n➖➖➖➖➖➖➖➖➖➖\nComplete more tasks to reach the minimum.", reply_markup=get_back_button())
             return
         
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        withdraw_collection.insert_one({"user_id": user_id, "amount": 1000, "wallet": wallet, "status": "Pending", "date": now_str})
+        withdraw_collection.insert_one({"user_id": user_id, "amount": 5000, "wallet": wallet, "status": "Pending", "date": now_str})
         
         await query.message.reply_text("✅ Withdrawal request sent! Please wait for approval.\n\n➖➖➖➖➖➖➖➖➖➖\n📢 **Note:** Payments are processed within 24 hours.", reply_markup=get_back_button(), parse_mode='Markdown')
         
         admin_keyboard = [[InlineKeyboardButton("✅ Approve", callback_data=f"wd_approve_{user_id}"), InlineKeyboardButton("❌ Reject", callback_data=f"wd_reject_{user_id}")]]
-        await context.bot.send_message(chat_id=ADMIN_ID, text=f"🚨 **Withdraw Request**\nUser: `{user_id}`\nWallet: `{wallet}`\nPoints: 1000", reply_markup=InlineKeyboardMarkup(admin_keyboard), parse_mode='Markdown')
+        await context.bot.send_message(chat_id=ADMIN_ID, text=f"🚨 **Withdraw Request**\nUser: `{user_id}`\nWallet: `{wallet}`\nPoints: 5000", reply_markup=InlineKeyboardMarkup(admin_keyboard), parse_mode='Markdown')
 
     elif data.startswith("wd_approve_"):
         if user_id != ADMIN_ID: return
         target_user_id = int(data.split("_")[2])
-        users_collection.update_one({"user_id": target_user_id}, {"$inc": {"points": -1000}})
+        users_collection.update_one({"user_id": target_user_id}, {"$inc": {"points": -5000}})
         withdraw_collection.update_many({"user_id": target_user_id, "status": "Pending"}, {"$set": {"status": "Approved"}})
         await query.edit_message_text(f"✅ Approved for `{target_user_id}`.")
         await context.bot.send_message(chat_id=target_user_id, text="✅ Your withdrawal has been approved!")
@@ -359,10 +373,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
 
+    # গিফট কোড রিডিম করার লজিক
+    if context.user_data.get('awaiting_gift_code'):
+        code_data = gift_codes_collection.find_one({"code": text.upper()})
+        if code_data:
+            reward = code_data['points']
+            add_points(user_id, reward)
+            gift_codes_collection.delete_one({"code": text.upper()}) # কোডটি ডিলিট করে দেওয়া হচ্ছে
+            await update.message.reply_text(f"🎉 **Congratulations!**\nYou have successfully redeemed the code and earned **{reward} Points**!", reply_markup=get_back_button(), parse_mode='Markdown')
+        else:
+            await update.message.reply_text("❌ **Invalid or Expired Code!** Please check the code and try again.", reply_markup=get_back_button(), parse_mode='Markdown')
+        context.user_data['awaiting_gift_code'] = False
+        return
+
     if context.user_data.get('awaiting_wallet'):
         if text.startswith("0x") and len(text) == 42:
             users_collection.update_one({"user_id": user_id}, {"$set": {"wallet": text}})
-            await update.message.reply_text(f"✅ Wallet Connected:\n`{text}`\n\n➖➖➖➖➖➖➖➖➖➖\nYou can now withdraw once you reach 1000 points.", reply_markup=get_back_button(), parse_mode='Markdown')
+            await update.message.reply_text(f"✅ Wallet Connected:\n`{text}`\n\n➖➖➖➖➖➖➖➖➖➖\nYou can now withdraw once you reach 5000 points.", reply_markup=get_back_button(), parse_mode='Markdown')
             context.user_data['awaiting_wallet'] = False
         else:
             await update.message.reply_text("❌ Invalid Address! Must start with 0x and be 42 chars.")
@@ -385,10 +412,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif action == 'delete_task':
             try:
                 task_id = text.strip()
-                result = tasks_collection.delete_one({"_id": task_id})
-                await update.message.reply_text(f"✅ Task deleted." if result.deleted_count > 0 else "❌ Task ID not found.")
+                result = tasks_collection.delete_one({"_id": ObjectId(task_id)})
+                await update.message.reply_text(f"✅ Task deleted successfully!" if result.deleted_count > 0 else "❌ Task ID not found.")
             except Exception:
                 await update.message.reply_text("❌ Invalid ID!")
+            context.user_data['admin_action'] = None
+
+        elif action == 'create_code':
+            try:
+                parts = text.split("|")
+                code_name, points = parts[0].strip().upper(), int(parts[1].strip())
+                gift_codes_collection.insert_one({"code": code_name, "points": points})
+                await update.message.reply_text(f"✅ **Gift Code Created!**\n\nCode: `{code_name}`\nReward: {points} Points\n\nSend this code to users.", parse_mode='Markdown')
+            except Exception:
+                await update.message.reply_text("❌ Format Error! Use: `Code | Points`", parse_mode='Markdown')
             context.user_data['admin_action'] = None
 
         elif action == 'edit_balance':
