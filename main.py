@@ -22,7 +22,7 @@ users_collection = db['users']
 tasks_collection = db['tasks']
 user_tasks_collection = db['user_tasks']
 withdraw_collection = db['withdrawals']
-gift_codes_collection = db['gift_codes'] # নতুন কালেকশন গিফট কোডের জন্য
+gift_codes_collection = db['gift_codes'] 
 
 # ================= HELPER FUNCTIONS =================
 def get_user(user_id):
@@ -40,7 +40,7 @@ def get_main_menu():
         [InlineKeyboardButton("📋 Tasks", callback_data="show_tasks"), InlineKeyboardButton("🎰 Lucky Spin", callback_data="spin")],
         [InlineKeyboardButton("💰 Balance", callback_data="balance"), InlineKeyboardButton("🎁 Daily Check-in", callback_data="checkin")],
         [InlineKeyboardButton("🔗 Refer & Earn", callback_data="refer"), InlineKeyboardButton("💸 Withdraw", callback_data="withdraw")],
-        [InlineKeyboardButton("🎟️ Redeem Code", callback_data="redeem_code")], # নতুন বাটন
+        [InlineKeyboardButton("🎟️ Redeem Code", callback_data="redeem_code")],
         [InlineKeyboardButton("📜 Task History", callback_data="task_history"), InlineKeyboardButton("📊 Withdraw History", callback_data="wd_history")],
         [InlineKeyboardButton("🆘 Support", url="https://t.me/" + SUPPORT_USERNAME.replace("@", "")), InlineKeyboardButton("🏆 Leaderboard", callback_data="leaderboard")]
     ]
@@ -56,7 +56,7 @@ def get_main_menu_text(first_name="User"):
         "🚀 **Earn free USDT by completing simple tasks.**\n\n"
         "✅ Complete Tasks & Earn Points\n"
         "✅ Invite Friends for Bonus\n"
-        "✅ Minimum Withdrawal: 5000 Pts = 5 USDT\n\n" # লিমিট আপডেট
+        "✅ Minimum Withdrawal: 5000 Pts = 5 USDT\n\n"
         "👇 **Choose an option below to start:**\n"
         "➖➖➖➖➖➖➖➖➖➖\n"
         "📢 **Notice:** Please complete tasks honestly. Fake accounts will be banned!"
@@ -69,7 +69,7 @@ def get_back_button():
 def get_admin_menu():
     keyboard = [
         [InlineKeyboardButton("➕ Add Task", callback_data="admin_add_task"), InlineKeyboardButton("🗑 Delete Task", callback_data="admin_del_task")],
-        [InlineKeyboardButton("🎁 Create Gift Code", callback_data="admin_create_code")], # নতুন বাটন
+        [InlineKeyboardButton("🎁 Create Gift Code", callback_data="admin_create_code")],
         [InlineKeyboardButton("👥 User List", callback_data="admin_users"), InlineKeyboardButton("🔄 Refresh Users", callback_data="admin_users")],
         [InlineKeyboardButton("💰 Edit Balance", callback_data="admin_edit_balance")],
         [InlineKeyboardButton("📢 Broadcast Message", callback_data="admin_broadcast")],
@@ -184,7 +184,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         points = user_data.get("points", 0)
         wallet = user_data.get("wallet")
         
-        # উইথড্র লিমিট ৫০০০ এ আপডেট করা হয়েছে
         progress = min(int((points / 5000) * 10), 10)
         bar = "█" * progress + "░" * (10 - progress)
         
@@ -276,21 +275,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += "\n➖➖➖➖➖➖➖➖➖➖\nKeep earning to secure your spot in the Top 10!"
         await query.message.reply_text(text, reply_markup=get_back_button(), parse_mode='Markdown')
 
+    # ================= UPDATED TASK SHOW LOGIC =================
     elif data == "show_tasks":
         completed_tasks = [t['task_id'] for t in user_tasks_collection.find({"user_id": user_id})]
         tasks = list(tasks_collection.find())
         
-        if not tasks:
-            await query.message.reply_text("No tasks available right now. Please check back later.", reply_markup=get_back_button())
+        # শুধু সেই টাস্কগুলো ফিল্টার করা হচ্ছে যেগুলো ইউজার আগে করেনি
+        available_tasks = [t for t in tasks if str(t['_id']) not in completed_tasks]
+        
+        if not available_tasks:
+            await query.message.reply_text("🎉 You have completed all available tasks! Please check back later for new tasks.", reply_markup=get_back_button())
             return
             
         keyboard = []
-        for task in tasks:
+        for task in available_tasks:
             task_id = str(task['_id'])
-            if task_id in completed_tasks:
-                keyboard.append([InlineKeyboardButton(f"✅ {task['title']} (Completed)", callback_data="already_done")])
-            else:
-                keyboard.append([InlineKeyboardButton(f"{task['title']} (+{task['reward']} pts)", callback_data=f"do_task_{task_id}")])
+            keyboard.append([InlineKeyboardButton(f"{task['title']} (+{task['reward']} pts)", callback_data=f"do_task_{task_id}")])
+            
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="back_to_main")])
         await query.message.reply_text("📋 **Available Tasks:**\n\nSelect a task to complete. Make sure to follow the timer rules.", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
@@ -342,7 +343,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not wallet:
             await query.message.reply_text("⚠️ Connect wallet first from Balance menu.\n\n➖➖➖➖➖➖➖➖➖➖\n📢 **Note:** Your BEP20 wallet is required to receive USDT.", reply_markup=get_back_button())
             return
-        if points < 5000: # লিমিট আপডেট
+        if points < 5000:
             await query.message.reply_text(f"❌ Minimum 5000 Points needed. Your Balance: {points}\n\n➖➖➖➖➖➖➖➖➖➖\nComplete more tasks to reach the minimum.", reply_markup=get_back_button())
             return
         
@@ -373,13 +374,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
 
-    # গিফট কোড রিডিম করার লজিক
     if context.user_data.get('awaiting_gift_code'):
         code_data = gift_codes_collection.find_one({"code": text.upper()})
         if code_data:
             reward = code_data['points']
             add_points(user_id, reward)
-            gift_codes_collection.delete_one({"code": text.upper()}) # কোডটি ডিলিট করে দেওয়া হচ্ছে
+            gift_codes_collection.delete_one({"code": text.upper()}) 
             await update.message.reply_text(f"🎉 **Congratulations!**\nYou have successfully redeemed the code and earned **{reward} Points**!", reply_markup=get_back_button(), parse_mode='Markdown')
         else:
             await update.message.reply_text("❌ **Invalid or Expired Code!** Please check the code and try again.", reply_markup=get_back_button(), parse_mode='Markdown')
