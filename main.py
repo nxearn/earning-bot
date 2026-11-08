@@ -10,7 +10,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 # ================= CONFIGURATION =================
 TOKEN = os.environ.get("TELEGRAM_TOKEN") 
 MONGODB_URI = os.environ.get("MONGODB_URI") 
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY") 
+GROK_API_KEY = os.environ.get("GROK_API_KEY") # Render-এ এটি সেট করুন
 ADMIN_ID = 6179056395 
 SUPPORT_USERNAME = "@nxprimemods1" 
 MONETAG_LINK = "https://uplcm.com/4/12203228" 
@@ -59,18 +59,19 @@ def get_welcome_text():
         "👇 **Choose an option below:**"
     )
 
-def ask_groq_ai(user_text):
-    if not GROQ_API_KEY:
-        return "❌ ERROR: GROQ_API_KEY is missing in Render Environment Variables."
+def ask_grok_ai(user_text):
+    if not GROK_API_KEY:
+        return "❌ ERROR: GROK_API_KEY is missing in Render Environment Variables."
         
-    url = "https://api.groq.com/openai/v1/chat/completions"
+    # xAI Grok API URL
+    url = "https://api.x.ai/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Authorization": f"Bearer {GROK_API_KEY}",
         "Content-Type": "application/json"
     }
     
     payload = {
-        "model": "openai/gpt-oss-120b", 
+        "model": "grok-beta", # xAI এর মডেল
         "messages": [
             {
                 "role": "system", 
@@ -108,16 +109,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(get_welcome_text(), reply_markup=get_main_menu(), parse_mode='Markdown')
 
-# টেস্ট কমান্ড
 async def test_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
-    if not GROQ_API_KEY:
-        await update.message.reply_text("❌ GROQ_API_KEY is NOT set in Render Environment!")
+    if not GROK_API_KEY:
+        await update.message.reply_text("❌ GROK_API_KEY is NOT set in Render Environment!")
         return
     
-    await update.message.reply_text("⏳ Testing AI...")
-    reply = ask_groq_ai("Hello, are you working?")
-    await update.message.reply_text(f"🤖 AI Response:\n\n{reply}")
+    await update.message.reply_text("⏳ Testing Grok AI...")
+    reply = ask_grok_ai("Hello, are you working?")
+    await update.message.reply_text(f"🤖 Grok AI Response:\n\n{reply}")
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -330,7 +330,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         if text:
             await update.message.reply_chat_action(action="typing")
-            ai_reply = ask_groq_ai(text)
+            ai_reply = ask_grok_ai(text)
             await update.message.reply_text(f"🤖 **AI Support:**\n\n{ai_reply}", reply_markup=get_back_button(), parse_mode='Markdown')
         return
 
@@ -454,7 +454,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_panel))
-    app.add_handler(CommandHandler("testai", test_ai)) # টেস্ট কমান্ড
+    app.add_handler(CommandHandler("testai", test_ai)) 
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.PHOTO | (filters.TEXT & ~filters.COMMAND), handle_message))
 
