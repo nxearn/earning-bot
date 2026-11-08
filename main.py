@@ -39,12 +39,25 @@ def get_admin_menu():
     keyboard = [
         [InlineKeyboardButton("➕ Add Free Panel", callback_data="admin_add_free"), InlineKeyboardButton("➕ Add Paid Panel", callback_data="admin_add_paid")],
         [InlineKeyboardButton("⚙️ Set Payment Info", callback_data="admin_set_payment")],
-        [InlineKeyboardButton("📺 Set Tutorial Video", callback_data="admin_set_video")], # নতুন বাটন
+        [InlineKeyboardButton("📺 Set Tutorial Video", callback_data="admin_set_video")], 
+        [InlineKeyboardButton("👥 User List", callback_data="admin_user_list")], # নতুন বাটন
+        [InlineKeyboardButton("🚫 Ban/Unban User", callback_data="admin_ban_user")], # নতুন বাটন
         [InlineKeyboardButton("🗑 Delete Panel", callback_data="admin_del_panel")],
         [InlineKeyboardButton("📢 Broadcast Message", callback_data="admin_broadcast")],
         [InlineKeyboardButton("🔙 Close Panel", callback_data="back_to_main")]
     ]
     return InlineKeyboardMarkup(keyboard)
+
+def get_welcome_text():
+    return (
+        "👋 **Welcome to NX Panel Store!**\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🟢 **Server Status:** Online\n"
+        "💎 **Platform:** 100% Genuine & Trusted\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📥 **You will get all panels in my bot free and paid.**\n\n"
+        "👇 **Choose an option below:**"
+    )
 
 def ask_groq_ai(user_text):
     if not GROQ_API_KEY:
@@ -57,7 +70,7 @@ def ask_groq_ai(user_text):
     }
     
     payload = {
-        "model": "llama3-8b-8192", 
+        "model": "openai/gpt-oss-120b", 
         "messages": [
             {
                 "role": "system", 
@@ -79,18 +92,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     first_name = update.effective_user.first_name
     
-    users_collection.update_one({"user_id": user_id}, {"$set": {"first_name": first_name}}, upsert=True)
-    
-    welcome_text = (
-        "👋 **Welcome to NX Panel Store!**\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "🟢 **Server Status:** Online\n"
-        "💎 **Platform:** 100% Genuine & Trusted\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📥 **Download premium and free panels easily.**\n\n"
-        "👇 **Choose an option below:**"
+    # ইউজার ডাটাবেসে সেভ করা
+    users_collection.update_one(
+        {"user_id": user_id}, 
+        {"$set": {"first_name": first_name}, "$setOnInsert": {"is_banned": False}}, 
+        upsert=True
     )
-    await update.message.reply_text(welcome_text, reply_markup=get_main_menu(), parse_mode='Markdown')
+    
+    # ব্যান চেক
+    user_data = users_collection.find_one({"user_id": user_id})
+    if user_data and user_data.get("is_banned"):
+        await update.message.reply_text("🚫 **You are banned from using this bot.**")
+        return
+    
+    await update.message.reply_text(get_welcome_text(), reply_markup=get_main_menu(), parse_mode='Markdown')
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -110,8 +125,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     data = query.data
 
+    # ব্যান চেক (অ্যাডমিন ছাড়া বাকি সবার জন্য)
+    if user_id != ADMIN_ID:
+        user_data = users_collection.find_one({"user_id": user_id})
+        if user_data and user_data.get("is_banned"):
+            await query.message.reply_text("🚫 **You are banned from using this bot.**")
+            return
+
     if data == "back_to_main":
-        await query.message.reply_text("👇 **Choose an option below:**", reply_markup=get_main_menu(), parse_mode='Markdown')
+        # এখানে মেইন মেনু নতুন মেসেজ হিসেবে আসবে, আগেরটা মুছবে না
+        await query.message.reply_text(get_welcome_text(), reply_markup=get_main_menu(), parse_mode='Markdown')
         
     # ---------------- ADMIN BUTTONS ----------------
     elif data == "admin_add_free":
@@ -129,16 +152,37 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("💳 Send Payment Details:\n`Bkash Number | USDT BEP20 Address`", parse_mode='Markdown')
         context.user_data['admin_action'] = 'set_payment'
 
-    # নতুন: টিউটোরিয়াল ভিডিও সেট করা
     elif data == "admin_set_video":
         if user_id != ADMIN_ID: return
-        await query.message.reply_text("📺 Send the Tutorial Video URL:\n*(Example: https://youtube.com/watch?v=...)*", parse_mode='Markdown')
+        await query.message.reply_text("📺 Send the Tutorial Video URL:", parse_mode='Markdown')
         context.user_data['admin_action'] = 'set_video'
 
     elif data == "admin_broadcast":
         if user_id != ADMIN_ID: return
-        await query.message.reply_text("📢 Send the message you want to broadcast to all users:")
+        await query.message.reply_text("📢 Send the message you want to broadcast:")
         context.user_data['admin_action'] = 'broadcast'
+
+    # নতুন: ইউজার লিস্ট দেখা
+    elif data == "admin_user_list":
+        if user_id != ADMIN_ID: return
+        users = list(users_collection.find())
+        text = f"👥 **Total Users:** {len(users)}\n\n"
+        for u in users[:30]: # প্রথম ৩০ জন দেখাবে
+            name = u.get("first_name", "Unknown")
+            uid = u.get("user_id")
+            status = "🚫 Banned" if u.get("is_banned") else "✅ Active"
+            text += f"👤 {name}\n🆔 `{uid}`\n📌 {status}\n\n"
+        
+        if len(users) > 30:
+            text += f"...and {len(users)-30} more users."
+            
+        await query.message.reply_text(text, parse_mode='Markdown')
+
+    # নতুন: ইউজার ব্যান করা
+    elif data == "admin_ban_user":
+        if user_id != ADMIN_ID: return
+        await query.message.reply_text("🚫 Send the **User ID** you want to Ban/Unban:", parse_mode='Markdown')
+        context.user_data['admin_action'] = 'ban_user'
 
     elif data == "admin_del_panel":
         if user_id != ADMIN_ID: return
@@ -160,13 +204,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if video_info and video_info.get('link'):
             video_link = video_info['link']
             keyboard = [[InlineKeyboardButton("▶️ Watch Video Now", url=video_link)]]
-            await query.message.reply_text("📺 **How to Download Panel**\n\nClick the button below to watch the tutorial video.", reply_markup=InlineKeyboardMarkup(keyboard))
+            await query.message.reply_text("📺 **How to Download Panel**\n\nClick the button below to watch the tutorial.", reply_markup=InlineKeyboardMarkup(keyboard))
         else:
             await query.message.reply_text("⚠️ Tutorial video is not set by admin yet.", reply_markup=get_back_button())
 
     # ---------------- USER: AI SUPPORT ----------------
     elif data == "ai_support":
-        await query.message.reply_text("🤖 **AI Support**\n\nAsk me anything about this bot (e.g., How to download panels, payment methods, etc.)")
+        await query.message.reply_text("🤖 **AI Support**\n\nAsk me anything about this bot.")
         context.user_data['in_ai_chat'] = True
 
     # ---------------- USER: FREE PANELS ----------------
@@ -177,7 +221,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         keyboard = []
         for p in panels:
-            # নাম ছোট করে দেখানো হচ্ছে (বাটনে বেশি লেখা গেলে কেটে যায়)
             short_name = p['name'][:20] + "..." if len(p['name']) > 20 else p['name']
             keyboard.append([InlineKeyboardButton(f"🎁 {short_name}", callback_data=f"get_free_{p['_id']}")])
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="back_to_main")])
@@ -188,11 +231,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         panel = panels_collection.find_one({"_id": ObjectId(panel_id)})
         if not panel: return
         
-        # এখানে প্যানেলের পুরো নাম এবং ডিটেইলস দেখানো হচ্ছে
-        text = (
-            f"🎁 **Panel Name:** {panel['name']}\n\n"
-            f"🎬 To download this panel, you need to watch a short ad."
-        )
+        text = f"🎁 **Panel Name:** {panel['name']}\n\n🎬 To download, you need to watch a short ad."
         keyboard = [
             [InlineKeyboardButton("🎬 Watch Ad", url=MONETAG_LINK)],
             [InlineKeyboardButton("✅ CLICK HERE", callback_data=f"claim_free_{panel_id}")]
@@ -204,7 +243,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         panel = panels_collection.find_one({"_id": ObjectId(panel_id)})
         if not panel: return
         
-        text = f"✅ **Ad verified!**\n\nClick the button below to download {panel['name']}:"
+        text = f"✅ **Ad verified!**\n\nClick below to download {panel['name']}:"
         keyboard = [[InlineKeyboardButton(f"📥 Download {panel['name']}", url=panel['link'])]]
         
         if panel.get('image'):
@@ -237,8 +276,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (
             f"💎 **Panel Name:** {panel['name']}\n\n"
             f"💳 **Payment Options:**\n"
-            f"📱 Bkash (Bangladesh): `{bkash_num}`\n"
-            f"🪙 USDT (BEP20): `{usdt_addr}`\n\n"
+            f"📱 **Bkash (Bangladesh Only):** `{bkash_num}`\n"
+            f"🪙 **USDT BEP20 (All Countries):** `{usdt_addr}`\n\n"
             f"After payment, send the screenshot here to get the panel link."
         )
         await query.message.reply_text(text, parse_mode='Markdown')
@@ -266,7 +305,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_user_id = int(parts[2])
         
         await query.edit_message_text(f"❌ Order for User `{target_user_id}` has been Rejected.")
-        await context.bot.send_message(chat_id=target_user_id, text="❌ **Payment Rejected!**\nYour payment screenshot was invalid or not received. Please contact support.")
+        await context.bot.send_message(chat_id=target_user_id, text="❌ **Payment Rejected!**\nYour payment screenshot was invalid. Please contact support.")
 
 # ================= MESSAGE HANDLER =================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -275,14 +314,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # AI চ্যাটের জন্য
     if context.user_data.get('in_ai_chat'):
-        if text.lower() in ['exit', 'back', 'stop']:
+        if text and text.lower() in ['exit', 'back', 'stop']:
             context.user_data['in_ai_chat'] = False
-            await update.message.reply_text("Exited AI Support. Back to Main Menu.", reply_markup=get_main_menu())
+            await update.message.reply_text("Exited AI Support.", reply_markup=get_main_menu())
             return
             
-        await update.message.reply_chat_action(action="typing")
-        ai_reply = ask_groq_ai(text)
-        await update.message.reply_text(f"🤖 **AI Support:**\n\n{ai_reply}", reply_markup=get_back_button(), parse_mode='Markdown')
+        if text:
+            await update.message.reply_chat_action(action="typing")
+            ai_reply = ask_groq_ai(text)
+            await update.message.reply_text(f"🤖 **AI Support:**\n\n{ai_reply}", reply_markup=get_back_button(), parse_mode='Markdown')
         return
 
     # ইউজার যদি প্যানেল কিনতে চায় এবং স্ক্রিনশট পাঠায়
@@ -339,13 +379,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Format Error! Use: `Bkash Number | USDT Address`", parse_mode='Markdown')
             context.user_data['admin_action'] = None
 
-        # নতুন: ভিডিও লিংক সেভ করা
         elif action == 'set_video':
             if text.startswith("http"):
                 settings_collection.update_one({"_id": "video_info"}, {"$set": {"link": text.strip()}}, upsert=True)
                 await update.message.reply_text(f"✅ **Tutorial Video Updated!**", parse_mode='Markdown')
             else:
-                await update.message.reply_text("❌ Invalid URL! Please send a valid video link.")
+                await update.message.reply_text("❌ Invalid URL!")
+            context.user_data['admin_action'] = None
+
+        # নতুন: ইউজার ব্যান/আনব্যান
+        elif action == 'ban_user':
+            try:
+                target_id = int(text.strip())
+                user_data = users_collection.find_one({"user_id": target_id})
+                if not user_data:
+                    await update.message.reply_text("❌ User not found in database.")
+                else:
+                    current_status = user_data.get("is_banned", False)
+                    new_status = not current_status
+                    users_collection.update_one({"user_id": target_id}, {"$set": {"is_banned": new_status}})
+                    
+                    status_text = "Banned" if new_status else "Unbanned"
+                    await update.message.reply_text(f"✅ User `{target_id}` has been **{status_text}**.")
+            except Exception:
+                await update.message.reply_text("❌ Invalid User ID!")
             context.user_data['admin_action'] = None
 
         elif action == 'delete_panel':
@@ -360,7 +417,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif action == 'broadcast':
             users = list(users_collection.find({}, {"user_id": 1}))
             success = 0
-            await update.message.reply_text("⏳ Broadcasting message to all users...")
+            await update.message.reply_text("⏳ Broadcasting message...")
             for u in users:
                 try:
                     await context.bot.send_message(chat_id=u['user_id'], text=f"📢 **Announcement:**\n\n{text}", parse_mode='Markdown')
