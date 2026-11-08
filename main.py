@@ -1,5 +1,6 @@
 import os
 import time
+import requests
 from flask import Flask
 from pymongo import MongoClient
 from bson.objectid import ObjectId
@@ -191,7 +192,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         panel = panels_collection.find_one({"_id": ObjectId(panel_id)})
         if not panel: return
         
-        text = f"🎁 **Panel Name:** {panel['name']}\n\n🎬 To download, you need to watch a short ad."
+        # টাইমার সেভ করা (১৫ সেকেন্ডের জন্য)
+        context.user_data[f'ad_timer_{panel_id}'] = time.time()
+        
+        text = f"🎁 **Panel Name:** {panel['name']}\n\n🎬 To download, you need to watch a short ad.\n\n**1. Click 'Watch Ad'.**\n**2. Wait 15 seconds.**\n**3. Click 'CLICK HERE'.**"
         keyboard = [
             [InlineKeyboardButton("🎬 Watch Ad", url=MONETAG_LINK)],
             [InlineKeyboardButton("✅ CLICK HERE", callback_data=f"claim_free_{panel_id}")]
@@ -200,9 +204,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("claim_free_"):
         panel_id = data.split("_")[2]
+        
+        # ১৫ সেকেন্ডের টাইমার চেক
+        start_time = context.user_data.get(f'ad_timer_{panel_id}')
+        if not start_time or time.time() - start_time < 15:
+            await query.answer("❌ Too fast! Please watch the ad for at least 15 seconds.", show_alert=True)
+            return
+        
         panel = panels_collection.find_one({"_id": ObjectId(panel_id)})
         if not panel: return
         
+        # টাইমার রিসেট
+        del context.user_data[f'ad_timer_{panel_id}']
+
         text = f"✅ **Ad verified!**\n\nClick below to download {panel['name']}:"
         keyboard = [[InlineKeyboardButton(f"📥 Download {panel['name']}", url=panel['link'])]]
         
