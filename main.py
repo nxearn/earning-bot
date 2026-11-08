@@ -10,7 +10,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 # ================= CONFIGURATION =================
 TOKEN = os.environ.get("TELEGRAM_TOKEN") 
 MONGODB_URI = os.environ.get("MONGODB_URI") 
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY") # Render-এ এটি সেট করুন
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY") 
 ADMIN_ID = 6179056395 
 SUPPORT_USERNAME = "@nxprimemods1" 
 MONETAG_LINK = "https://uplcm.com/4/12203228" 
@@ -70,7 +70,7 @@ def ask_openrouter_ai(user_text):
     }
     
     payload = {
-        "model": "deepseek/deepseek-chat:free", # OpenRouter এর ফ্রি DeepSeek মডেল
+        "model": "deepseek/deepseek-r1-0528:free", # ১০০% কাজ করবে এমন ফ্রি মডেল
         "messages": [
             {
                 "role": "system", 
@@ -81,12 +81,11 @@ def ask_openrouter_ai(user_text):
     }
     
     try:
-        response = requests.post(url, headers=headers, json=payload)
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
         data = response.json()
-        if 'choices' in data:
+        if 'choices' in data and len(data['choices']) > 0:
             return data['choices'][0]['message']['content']
         else:
-            # যদি ফ্রি মডেলে লিমিট শেষ হয়ে যায় বা এরর আসে
             return f"❌ API Error: {data}"
     except Exception as e:
         return f"❌ Connection Error: {str(e)}"
