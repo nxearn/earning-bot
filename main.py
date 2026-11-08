@@ -10,7 +10,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 # ================= CONFIGURATION =================
 TOKEN = os.environ.get("TELEGRAM_TOKEN") 
 MONGODB_URI = os.environ.get("MONGODB_URI") 
-GROK_API_KEY = os.environ.get("GROK_API_KEY") # Render-এ এটি সেট করুন
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY") # Render-এ এটি সেট করুন
 ADMIN_ID = 6179056395 
 SUPPORT_USERNAME = "@nxprimemods1" 
 MONETAG_LINK = "https://uplcm.com/4/12203228" 
@@ -59,19 +59,18 @@ def get_welcome_text():
         "👇 **Choose an option below:**"
     )
 
-def ask_grok_ai(user_text):
-    if not GROK_API_KEY:
-        return "❌ ERROR: GROK_API_KEY is missing in Render Environment Variables."
+def ask_openrouter_ai(user_text):
+    if not OPENROUTER_API_KEY:
+        return "❌ ERROR: OPENROUTER_API_KEY is missing in Render Environment Variables."
         
-    # xAI Grok API URL
-    url = "https://api.x.ai/v1/chat/completions"
+    url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {GROK_API_KEY}",
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
     
     payload = {
-        "model": "grok-beta", # xAI এর মডেল
+        "model": "deepseek/deepseek-chat:free", # OpenRouter এর ফ্রি DeepSeek মডেল
         "messages": [
             {
                 "role": "system", 
@@ -87,6 +86,7 @@ def ask_grok_ai(user_text):
         if 'choices' in data:
             return data['choices'][0]['message']['content']
         else:
+            # যদি ফ্রি মডেলে লিমিট শেষ হয়ে যায় বা এরর আসে
             return f"❌ API Error: {data}"
     except Exception as e:
         return f"❌ Connection Error: {str(e)}"
@@ -111,13 +111,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def test_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
-    if not GROK_API_KEY:
-        await update.message.reply_text("❌ GROK_API_KEY is NOT set in Render Environment!")
+    if not OPENROUTER_API_KEY:
+        await update.message.reply_text("❌ OPENROUTER_API_KEY is NOT set in Render Environment!")
         return
     
-    await update.message.reply_text("⏳ Testing Grok AI...")
-    reply = ask_grok_ai("Hello, are you working?")
-    await update.message.reply_text(f"🤖 Grok AI Response:\n\n{reply}")
+    await update.message.reply_text("⏳ Testing DeepSeek AI...")
+    reply = ask_openrouter_ai("Hello, are you working? Reply in one sentence.")
+    await update.message.reply_text(f"🤖 AI Response:\n\n{reply}")
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -330,7 +330,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         if text:
             await update.message.reply_chat_action(action="typing")
-            ai_reply = ask_grok_ai(text)
+            ai_reply = ask_openrouter_ai(text)
             await update.message.reply_text(f"🤖 **AI Support:**\n\n{ai_reply}", reply_markup=get_back_button(), parse_mode='Markdown')
         return
 
