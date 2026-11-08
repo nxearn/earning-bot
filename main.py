@@ -22,7 +22,7 @@ panels_collection = db['panels']
 settings_collection = db['settings']
 users_collection = db['users']
 
-# ================= AI & HELPER FUNCTIONS =================
+# ================= HELPER FUNCTIONS =================
 def get_main_menu():
     keyboard = [
         [InlineKeyboardButton("🎁 Free Panels", callback_data="list_free_panels")],
@@ -40,8 +40,8 @@ def get_admin_menu():
         [InlineKeyboardButton("➕ Add Free Panel", callback_data="admin_add_free"), InlineKeyboardButton("➕ Add Paid Panel", callback_data="admin_add_paid")],
         [InlineKeyboardButton("⚙️ Set Payment Info", callback_data="admin_set_payment")],
         [InlineKeyboardButton("📺 Set Tutorial Video", callback_data="admin_set_video")], 
-        [InlineKeyboardButton("👥 User List", callback_data="admin_user_list")], # নতুন বাটন
-        [InlineKeyboardButton("🚫 Ban/Unban User", callback_data="admin_ban_user")], # নতুন বাটন
+        [InlineKeyboardButton("👥 User List", callback_data="admin_user_list")], 
+        [InlineKeyboardButton("🚫 Ban/Unban User", callback_data="admin_ban_user")], 
         [InlineKeyboardButton("🗑 Delete Panel", callback_data="admin_del_panel")],
         [InlineKeyboardButton("📢 Broadcast Message", callback_data="admin_broadcast")],
         [InlineKeyboardButton("🔙 Close Panel", callback_data="back_to_main")]
@@ -92,7 +92,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     first_name = update.effective_user.first_name
     
-    # ইউজার ডাটাবেসে সেভ করা
+    # ইউজার ডাটাবেসে সেভ করা (আপডেট বা ইনসার্ট)
     users_collection.update_one(
         {"user_id": user_id}, 
         {"$set": {"first_name": first_name}, "$setOnInsert": {"is_banned": False}}, 
@@ -125,7 +125,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     data = query.data
 
-    # ব্যান চেক (অ্যাডমিন ছাড়া বাকি সবার জন্য)
+    # ব্যান চেক (অ্যাডমিন ছাড়া)
     if user_id != ADMIN_ID:
         user_data = users_collection.find_one({"user_id": user_id})
         if user_data and user_data.get("is_banned"):
@@ -133,7 +133,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     if data == "back_to_main":
-        # এখানে মেইন মেনু নতুন মেসেজ হিসেবে আসবে, আগেরটা মুছবে না
         await query.message.reply_text(get_welcome_text(), reply_markup=get_main_menu(), parse_mode='Markdown')
         
     # ---------------- ADMIN BUTTONS ----------------
@@ -162,23 +161,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("📢 Send the message you want to broadcast:")
         context.user_data['admin_action'] = 'broadcast'
 
-    # নতুন: ইউজার লিস্ট দেখা
+    # ইউজার লিস্ট ফিক্স করা হয়েছে
     elif data == "admin_user_list":
         if user_id != ADMIN_ID: return
         users = list(users_collection.find())
         text = f"👥 **Total Users:** {len(users)}\n\n"
-        for u in users[:30]: # প্রথম ৩০ জন দেখাবে
+        
+        # সব ইউজার দেখাবে (যদি ২০ জনের বেশি হয়, তবে প্রথম ২০ জন দেখাবে)
+        for u in users[:20]: 
             name = u.get("first_name", "Unknown")
             uid = u.get("user_id")
             status = "🚫 Banned" if u.get("is_banned") else "✅ Active"
             text += f"👤 {name}\n🆔 `{uid}`\n📌 {status}\n\n"
         
-        if len(users) > 30:
-            text += f"...and {len(users)-30} more users."
+        if len(users) > 20:
+            text += f"*(Showing first 20 users out of {len(users)})*"
             
         await query.message.reply_text(text, parse_mode='Markdown')
 
-    # নতুন: ইউজার ব্যান করা
     elif data == "admin_ban_user":
         if user_id != ADMIN_ID: return
         await query.message.reply_text("🚫 Send the **User ID** you want to Ban/Unban:", parse_mode='Markdown')
@@ -345,7 +345,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await update.message.reply_text("⏳ **Pending!**\nYour payment screenshot has been sent to Admin. Please wait for approval.")
             context.user_data['buying_panel_id'] = None
-            
         else:
             await update.message.reply_text("❌ Please send a **Screenshot** of your payment.")
         return
@@ -387,7 +386,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Invalid URL!")
             context.user_data['admin_action'] = None
 
-        # নতুন: ইউজার ব্যান/আনব্যান
         elif action == 'ban_user':
             try:
                 target_id = int(text.strip())
