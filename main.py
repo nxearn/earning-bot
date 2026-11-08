@@ -1,6 +1,5 @@
 import os
 import time
-import requests
 from flask import Flask
 from pymongo import MongoClient
 from bson.objectid import ObjectId
@@ -10,7 +9,6 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 # ================= CONFIGURATION =================
 TOKEN = os.environ.get("TELEGRAM_TOKEN") 
 MONGODB_URI = os.environ.get("MONGODB_URI") 
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY") 
 ADMIN_ID = 6179056395 
 SUPPORT_USERNAME = "@nxprimemods1" 
 MONETAG_LINK = "https://uplcm.com/4/12203228" 
@@ -28,7 +26,7 @@ def get_main_menu():
         [InlineKeyboardButton("🎁 Free Panels", callback_data="list_free_panels")],
         [InlineKeyboardButton("💎 Paid Panels", callback_data="list_paid_panels")],
         [InlineKeyboardButton("📺 How to Download (Video)", callback_data="watch_tutorial")],
-        [InlineKeyboardButton("🤖 AI Support", callback_data="ai_support")]
+        [InlineKeyboardButton("🆘 Support", url="https://t.me/" + SUPPORT_USERNAME.replace("@", ""))]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -59,37 +57,6 @@ def get_welcome_text():
         "👇 **Choose an option below:**"
     )
 
-def ask_openrouter_ai(user_text):
-    if not OPENROUTER_API_KEY:
-        return "❌ ERROR: OPENROUTER_API_KEY is missing in Render Environment Variables."
-        
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    payload = {
-        "model": "deepseek/deepseek-r1-0528:free", # ১০০% কাজ করবে এমন ফ্রি মডেল
-        "messages": [
-            {
-                "role": "system", 
-                "content": "You are a helpful support assistant for 'NX Panel Store' Telegram bot. Users can download Free Panels by watching ads, and buy Paid Panels using Bkash or USDT. Answer their questions politely in English or Bangla."
-            },
-            {"role": "user", "content": user_text}
-        ]
-    }
-    
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
-        data = response.json()
-        if 'choices' in data and len(data['choices']) > 0:
-            return data['choices'][0]['message']['content']
-        else:
-            return f"❌ API Error: {data}"
-    except Exception as e:
-        return f"❌ Connection Error: {str(e)}"
-
 # ================= COMMANDS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -107,16 +74,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     await update.message.reply_text(get_welcome_text(), reply_markup=get_main_menu(), parse_mode='Markdown')
-
-async def test_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
-    if not OPENROUTER_API_KEY:
-        await update.message.reply_text("❌ OPENROUTER_API_KEY is NOT set in Render Environment!")
-        return
-    
-    await update.message.reply_text("⏳ Testing DeepSeek AI...")
-    reply = ask_openrouter_ai("Hello, are you working? Reply in one sentence.")
-    await update.message.reply_text(f"🤖 AI Response:\n\n{reply}")
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -216,11 +173,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.message.reply_text("⚠️ Tutorial video is not set by admin yet.", reply_markup=get_back_button())
 
-    # ---------------- USER: AI SUPPORT ----------------
-    elif data == "ai_support":
-        await query.message.reply_text("🤖 **AI Support**\n\nAsk me anything about this bot.")
-        context.user_data['in_ai_chat'] = True
-
     # ---------------- USER: FREE PANELS ----------------
     elif data == "list_free_panels":
         panels = list(panels_collection.find({"is_paid": False}))
@@ -319,19 +271,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
-
-    # AI চ্যাটের জন্য
-    if context.user_data.get('in_ai_chat'):
-        if text and text.lower() in ['exit', 'back', 'stop']:
-            context.user_data['in_ai_chat'] = False
-            await update.message.reply_text("Exited AI Support.", reply_markup=get_main_menu())
-            return
-            
-        if text:
-            await update.message.reply_chat_action(action="typing")
-            ai_reply = ask_openrouter_ai(text)
-            await update.message.reply_text(f"🤖 **AI Support:**\n\n{ai_reply}", reply_markup=get_back_button(), parse_mode='Markdown')
-        return
 
     # ইউজার যদি প্যানেল কিনতে চায় এবং স্ক্রিনশট পাঠায়
     if context.user_data.get('buying_panel_id'):
@@ -453,7 +392,6 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_panel))
-    app.add_handler(CommandHandler("testai", test_ai)) 
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.PHOTO | (filters.TEXT & ~filters.COMMAND), handle_message))
 
