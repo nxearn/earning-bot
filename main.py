@@ -61,7 +61,7 @@ def get_welcome_text():
 
 def ask_groq_ai(user_text):
     if not GROQ_API_KEY:
-        return "AI Support is currently offline. Please contact admin."
+        return "❌ ERROR: GROQ_API_KEY is missing in Render Environment Variables."
         
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
@@ -83,29 +83,41 @@ def ask_groq_ai(user_text):
     try:
         response = requests.post(url, headers=headers, json=payload)
         data = response.json()
-        return data['choices'][0]['message']['content']
-    except Exception:
-        return "Sorry, I am facing some issues right now. Please try again later."
+        if 'choices' in data:
+            return data['choices'][0]['message']['content']
+        else:
+            return f"❌ API Error: {data}"
+    except Exception as e:
+        return f"❌ Connection Error: {str(e)}"
 
 # ================= COMMANDS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     first_name = update.effective_user.first_name
     
-    # ইউজার ডাটাবেসে সেভ করা (আপডেট বা ইনসার্ট)
     users_collection.update_one(
         {"user_id": user_id}, 
         {"$set": {"first_name": first_name}, "$setOnInsert": {"is_banned": False}}, 
         upsert=True
     )
     
-    # ব্যান চেক
     user_data = users_collection.find_one({"user_id": user_id})
     if user_data and user_data.get("is_banned"):
         await update.message.reply_text("🚫 **You are banned from using this bot.**")
         return
     
     await update.message.reply_text(get_welcome_text(), reply_markup=get_main_menu(), parse_mode='Markdown')
+
+# টেস্ট কমান্ড
+async def test_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    if not GROQ_API_KEY:
+        await update.message.reply_text("❌ GROQ_API_KEY is NOT set in Render Environment!")
+        return
+    
+    await update.message.reply_text("⏳ Testing AI...")
+    reply = ask_groq_ai("Hello, are you working?")
+    await update.message.reply_text(f"🤖 AI Response:\n\n{reply}")
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -125,7 +137,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     data = query.data
 
-    # ব্যান চেক (অ্যাডমিন ছাড়া)
     if user_id != ADMIN_ID:
         user_data = users_collection.find_one({"user_id": user_id})
         if user_data and user_data.get("is_banned"):
@@ -161,13 +172,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("📢 Send the message you want to broadcast:")
         context.user_data['admin_action'] = 'broadcast'
 
-    # ইউজার লিস্ট ফিক্স করা হয়েছে
     elif data == "admin_user_list":
         if user_id != ADMIN_ID: return
         users = list(users_collection.find())
         text = f"👥 **Total Users:** {len(users)}\n\n"
         
-        # সব ইউজার দেখাবে (যদি ২০ জনের বেশি হয়, তবে প্রথম ২০ জন দেখাবে)
         for u in users[:20]: 
             name = u.get("first_name", "Unknown")
             uid = u.get("user_id")
@@ -445,6 +454,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_panel))
+    app.add_handler(CommandHandler("testai", test_ai)) # টেস্ট কমান্ড
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.PHOTO | (filters.TEXT & ~filters.COMMAND), handle_message))
 
